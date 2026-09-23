@@ -1,0 +1,24 @@
+[[plugin]]
+id = "pozzoo/hassio"
+name = "Home Assistant"
+version = "2.0.8"
+author = "Pozzoo"
+license = "MIT"
+icon = "smart-home"
+description = "Monitor and control Home Assistant entities from the bar. Displays entity states and provides quick toggles."
+deprecated = false
+plugin_api = 9
+tags = ["bar", "panel", "service", "shortcut", "network", "indicator"]
+dependencies = ["xdg-open"]
+
+[[plugin]]
+id = "bjesus/tailscale"
+name = "Tailscale"
+version = "1.0.0"
+author = "bjesus"
+license = "MIT"
+icon = "network"
+description = "Clean, simple Tailscale connection toggle and exit node picker"
+deprecated = false
+plugin_api = 9
+tags = ["bar", "panel", "service", "network"]

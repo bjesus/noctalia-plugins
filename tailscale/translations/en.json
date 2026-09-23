@@ -1,0 +1,17 @@
+{
+  "panel": {
+    "title": "Tailscale",
+    "connected": "Connected",
+    "disconnected": "Disconnected",
+    "updating": "Updating...",
+    "active_exit_node": "Active exit node",
+    "available": "Available",
+    "offline": "Offline",
+    "no_exit_nodes": "No exit nodes found on your tailnet",
+    "connect_prompt": "Connect to Tailscale to see exit nodes"
+  },
+  "widget": {
+    "connected": "Tailscale: Connected",
+    "disconnected": "Tailscale: Disconnected"
+  }
+}

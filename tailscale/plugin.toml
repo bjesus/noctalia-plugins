@@ -1,0 +1,25 @@
+id = "bjesus/tailscale"
+name = "Tailscale"
+version = "1.0.0"
+plugin_api = 9
+author = "bjesus"
+license = "MIT"
+tags = ["bar", "panel", "service", "network"]
+icon = "network"
+description = "Clean, simple Tailscale connection toggle and exit node picker"
+
+[[widget]]
+id = "status"
+entry = "widget.luau"
+
+[[service]]
+id = "backend"
+entry = "service.luau"
+
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 380
+height = 460
+placement = "floating"
+position = "center"
