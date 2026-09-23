@@ -6,5 +6,5 @@ shortcut.setActive(false)
 shortcut.setEnabled(true)
 
 function onClick()
-    noctalia.togglePanel("pozzoo/hassio:entity_manager")
+    noctalia.togglePanel("bjesus/ha-ma:entity_manager")
 end

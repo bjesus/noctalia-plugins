@@ -1,4 +1,4 @@
-# Tailscale
+# Tailscale Exit Nodes
 
 Clean, simple Tailscale connection toggle and exit node picker for Noctalia.
 
@@ -6,7 +6,7 @@ Clean, simple Tailscale connection toggle and exit node picker for Noctalia.
 
 | Field | Value |
 | --- | --- |
-| ID | `bjesus/tailscale` |
+| ID | `bjesus/tailscale-exit-nodes` |
 | Entries | Widget: `status`; Service: `backend`; Panel: `panel` |
 
 ## Requirements

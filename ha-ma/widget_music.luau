@@ -95,14 +95,14 @@ function update()
 end
 
 function onClick()
-    noctalia.togglePanel("pozzoo/hassio:music")
+    noctalia.togglePanel("bjesus/ha-ma:music")
 end
 
 function onRightClick()
     local player = getActivePlayer()
     if player and player.entity_id then
         noctalia.runAsync(string.format(
-            "noctalia msg service-call pozzoo/hassio:connection media_player/media_play_pause %s",
+            "noctalia msg service-call bjesus/ha-ma:connection media_player/media_play_pause %s",
             player.entity_id
         ))
     end

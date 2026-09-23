@@ -26,7 +26,7 @@ local function render()
 end
 
 function onClick()
-  noctalia.togglePanel("bjesus/tailscale:panel")
+  noctalia.togglePanel("bjesus/tailscale-exit-nodes:panel")
 end
 
 noctalia.state.watch("ts_running", function(val)

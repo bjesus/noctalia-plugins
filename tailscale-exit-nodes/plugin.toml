@@ -1,5 +1,5 @@
-id = "bjesus/tailscale"
-name = "Tailscale"
+id = "bjesus/tailscale-exit-nodes"
+name = "Tailscale Exit Nodes"
 version = "1.0.0"
 plugin_api = 9
 author = "bjesus"

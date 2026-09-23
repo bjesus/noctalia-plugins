@@ -86,7 +86,7 @@ function update()
 end
 
 function onClick()
-  noctalia.togglePanel("pozzoo/hassio:entity_manager")
+  noctalia.togglePanel("bjesus/ha-ma:entity_manager")
 end
 
 function onRightClick()

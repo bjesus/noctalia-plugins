@@ -4,8 +4,8 @@ Custom plugins repository for [Noctalia](https://noctalia.dev).
 
 ## Included Plugins
 
-- **Home Assistant** (`pozzoo/hassio`): Monitor and control entities, brightness, scenes, and media players from the bar, panels, and control center. Supports Music Assistant search and playback.
-- **Tailscale** (`bjesus/tailscale`): Bar status indicator, quick connect toggle, and exit node switcher panel.
+- **Home Assistant & Music Assistant** (`bjesus/ha-ma`): Monitor and control entities, brightness, scenes, and media players from the bar, panels, and control center. Supports Music Assistant search, playback, and speaker grouping. Based on `pozzoo/hassio` with significant extensions.
+- **Tailscale Exit Nodes** (`bjesus/tailscale-exit-nodes`): Bar status indicator, quick connect toggle, and exit node switcher panel.
 
 ## Adding this source to Noctalia
 
@@ -18,8 +18,8 @@ noctalia msg plugins source add bjesus git https://github.com/bjesus/noctalia-pl
 Then enable whichever plugin you want:
 
 ```sh
-noctalia msg plugins enable bjesus/tailscale
-noctalia msg plugins enable pozzoo/hassio
+noctalia msg plugins enable bjesus/tailscale-exit-nodes
+noctalia msg plugins enable bjesus/ha-ma
 ```
 
 To update plugins from this source:
