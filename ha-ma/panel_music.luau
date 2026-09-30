@@ -48,70 +48,9 @@ local function getCleanToken()
     return t:gsub("^%s+", ""):gsub("%s+$", "")
 end
 
-local function extractMediaPlayers(raw)
-    if type(raw) ~= "string" or raw == "" then return {} end
-    local list = {}
-    local pos = 1
-    local len = #raw
-    while pos <= len do
-        local s1, e1 = raw:find('"entity_id":"media_player.', pos, true)
-        local s2, e2 = raw:find('"entity_id": "media_player.', pos, true)
-        local s, e
-        if s1 and s2 then
-            if s1 < s2 then s, e = s1, e1 else s, e = s2, e2 end
-        elseif s1 then
-            s, e = s1, e1
-        elseif s2 then
-            s, e = s2, e2
-        else
-            break
-        end
+local MEDIA_PLAYERS_TEMPLATE =
+    [=[[{% for s in states.media_player %}{"entity_id":{{ s.entity_id | tojson }},"state":{{ s.state | tojson }},"attributes":{"friendly_name":{{ s.attributes.get("friendly_name", "") | tojson }},"volume_level":{{ (s.attributes.get("volume_level") | tojson) }},"is_volume_muted":{{ (s.attributes.get("is_volume_muted") | tojson) }},"media_title":{{ (s.attributes.get("media_title") | tojson) }},"media_artist":{{ (s.attributes.get("media_artist") | tojson) }},"media_album_name":{{ (s.attributes.get("media_album_name") | tojson) }},"entity_picture":{{ (s.attributes.get("entity_picture") | tojson) }},"group_members":{{ (s.attributes.get("group_members", []) | tojson) }},"mass_player_type":{{ (s.attributes.get("mass_player_type") | tojson) }},"app_id":{{ (s.attributes.get("app_id") | tojson) }},"supported_features":{{ (s.attributes.get("supported_features", 0) | tojson) }}}}{% if not loop.last %},{% endif %}{% endfor %}]]=]
 
-        local objStart = s
-        while objStart > 1 and raw:byte(objStart) ~= 123 do
-            objStart = objStart - 1
-        end
-
-        local depth = 0
-        local inStr = false
-        local esc = false
-        local objEnd = nil
-        for i = objStart, len do
-            local b = raw:byte(i)
-            if esc then
-                esc = false
-            elseif b == 92 then
-                esc = true
-            elseif b == 34 then
-                inStr = not inStr
-            elseif not inStr then
-                if b == 123 then
-                    depth = depth + 1
-                elseif b == 125 then
-                    depth = depth - 1
-                    if depth == 0 then
-                        objEnd = i
-                        break
-                    end
-                end
-            end
-        end
-
-        if objEnd then
-            local chunk = raw:sub(objStart, objEnd)
-            local ok, parsed = pcall(function()
-                return noctalia.json.decode(chunk)
-            end)
-            if ok and type(parsed) == "table" and parsed.entity_id then
-                table.insert(list, parsed)
-            end
-            pos = objEnd + 1
-        else
-            pos = e + 1
-        end
-    end
-    return list
-end
 
 local function tr(key, subst)
     return noctalia.tr("panel." .. key, subst)
@@ -276,8 +215,10 @@ local function ensureMaConfigEntry(callback)
     end
 
     haGet("/api/config/config_entries/entry", function(response)
-        local entries = noctalia.json.decode(response.body)
-        if type(entries) == "table" then
+        local ok, entries = pcall(function()
+            return response and response.body and noctalia.json.decode(response.body)
+        end)
+        if ok and type(entries) == "table" then
             for _, e in ipairs(entries) do
                 if e.domain == "music_assistant" then
                     maConfigEntryId = e.entry_id
@@ -296,43 +237,47 @@ local function ensureMaConfigEntry(callback)
 end
 
 local function fetchFreshSpeakers(onDone)
-    haGet("/api/states", function(resp)
+    haPost("/api/template", { template = MEDIA_PLAYERS_TEMPLATE }, function(resp)
         if not resp or not resp.body or resp.body == "" then
             if onDone then onDone() end
             return
         end
-        local mediaPlayers = extractMediaPlayers(resp.body)
-        local seenMediaPlayers = {}
-        for _, s in ipairs(mediaPlayers) do
-            local eid = type(s) == "table" and s.entity_id or nil
-            if type(eid) == "string" and eid:match("^media_player%.") then
-                local attrs = s.attributes or {}
-                entityStates[eid] = {
-                    entity_id = eid,
-                    state = s.state,
-                    friendly_name = attrs.friendly_name or eid,
-                    domain = "media_player",
-                    volume_level = attrs.volume_level,
-                    is_volume_muted = attrs.is_volume_muted,
-                    media_title = attrs.media_title,
-                    media_artist = attrs.media_artist,
-                    media_album_name = attrs.media_album_name,
-                    entity_picture = attrs.entity_picture,
-                    group_members = attrs.group_members or {},
-                    app_id = attrs.app_id,
-                    mass_player_type = attrs.mass_player_type,
-                    supported_features = attrs.supported_features or 0,
-                }
-                seenMediaPlayers[eid] = true
+        local ok, mediaPlayers = pcall(function()
+            return noctalia.json.decode(resp.body)
+        end)
+        if ok and type(mediaPlayers) == "table" then
+            local seenMediaPlayers = {}
+            for _, s in ipairs(mediaPlayers) do
+                local eid = type(s) == "table" and s.entity_id or nil
+                if type(eid) == "string" and eid:match("^media_player%.") then
+                    local attrs = s.attributes or {}
+                    entityStates[eid] = {
+                        entity_id = eid,
+                        state = s.state,
+                        friendly_name = attrs.friendly_name or eid,
+                        domain = "media_player",
+                        volume_level = attrs.volume_level,
+                        is_volume_muted = attrs.is_volume_muted,
+                        media_title = attrs.media_title,
+                        media_artist = attrs.media_artist,
+                        media_album_name = attrs.media_album_name,
+                        entity_picture = attrs.entity_picture,
+                        group_members = attrs.group_members or {},
+                        app_id = attrs.app_id,
+                        mass_player_type = attrs.mass_player_type,
+                        supported_features = attrs.supported_features or 0,
+                    }
+                    seenMediaPlayers[eid] = true
+                end
             end
-        end
-        for eid in pairs(entityStates) do
-            if eid:match("^media_player%.") and not seenMediaPlayers[eid] then
-                entityStates[eid] = nil
+            for eid in pairs(entityStates) do
+                if eid:match("^media_player%.") and not seenMediaPlayers[eid] then
+                    entityStates[eid] = nil
+                end
             end
+            noctalia.state.set("entities", entityStates)
+            render()
         end
-        noctalia.state.set("entities", entityStates)
-        render()
         if onDone then onDone() end
     end, function()
         if onDone then onDone() end
@@ -377,8 +322,10 @@ local function searchMusicAssistant(query)
         }
         haPost("/api/services/music_assistant/search?return_response=true", payload, function(resp)
             maSearching = false
-            local data = noctalia.json.decode(resp.body)
-            local sr = (type(data) == "table" and data.service_response) or {}
+            local ok, data = pcall(function()
+                return resp and resp.body and noctalia.json.decode(resp.body)
+            end)
+            local sr = (ok and type(data) == "table" and data.service_response) or {}
             maSearchResults = {
                 artists = sr.artists or {},
                 albums = sr.albums or {},
@@ -760,7 +707,7 @@ local function buildSpeakersView()
             }),
             ui.button({
                 glyph = isMuted and "volume-off" or "volume",
-                variant = isMuted and "error" or "default",
+                variant = isMuted and "outline" or "default",
                 onClick = function()
                     haPost("/api/services/media_player/volume_mute", { entity_id = eid, is_volume_muted = not isMuted })
                 end,
@@ -827,6 +774,16 @@ local function buildSpeakersView()
                 haPost("/api/services/media_player/media_next_track", { entity_id = eid })
             end,
         })
+        local clearQueueBtn = ui.button({
+            glyph = "playlist-x",
+            variant = "default",
+            tooltip = tr("clear_queue"),
+            onClick = function()
+                haPost("/api/services/media_player/clear_playlist", { entity_id = eid }, function()
+                    fetchFreshSpeakers()
+                end)
+            end,
+        })
         local selectBtn = ui.button({
             glyph = isCurrentMaster and "check" or "circle",
             variant = isCurrentMaster and "primary" or "default",
@@ -837,7 +794,7 @@ local function buildSpeakersView()
         })
 
         local controlsRow = ui.row({ align = "center", gap = 4 }, {
-            prevBtn, playBtn, nextBtn, selectBtn,
+            prevBtn, playBtn, nextBtn, clearQueueBtn, selectBtn,
         })
 
         -- Top row: Cover | Title + Artist | Controls in top-right

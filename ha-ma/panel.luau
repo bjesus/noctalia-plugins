@@ -152,8 +152,10 @@ local function loadMonitoredEntities()
     local path = managedEntitiesPath()
     local data = path and noctalia.readFile(path)
     if data and data ~= "" then
-        local parsed = noctalia.json.decode(data)
-        if type(parsed) == "table" then
+        local ok, parsed = pcall(function()
+            return noctalia.json.decode(data)
+        end)
+        if ok and type(parsed) == "table" then
             monitoredEntities = parsed
             return
         end
@@ -228,8 +230,10 @@ local function ensureMaConfigEntry(callback)
     end
 
     haGet("/api/config/config_entries/entry", function(response)
-        local entries = noctalia.json.decode(response.body)
-        if type(entries) == "table" then
+        local ok, entries = pcall(function()
+            return response and response.body and noctalia.json.decode(response.body)
+        end)
+        if ok and type(entries) == "table" then
             for _, e in ipairs(entries) do
                 if e.domain == "music_assistant" then
                     maConfigEntryId = e.entry_id
@@ -551,8 +555,10 @@ local function searchMusicAssistant(query)
         }
         haPost("/api/services/music_assistant/search?return_response=true", payload, function(resp)
             maSearching = false
-            local data = noctalia.json.decode(resp.body)
-            local sr = (type(data) == "table" and data.service_response) or {}
+            local ok, data = pcall(function()
+                return resp and resp.body and noctalia.json.decode(resp.body)
+            end)
+            local sr = (ok and type(data) == "table" and data.service_response) or {}
             maSearchResults = {
                 artists = sr.artists or {},
                 albums = sr.albums or {},
