@@ -1,0 +1,88 @@
+{
+  "settings": {
+    "exec": {
+      "label": "Command (exec)",
+      "description": "Shell script or command to execute."
+    },
+    "exec_if": {
+      "label": "Condition (exec-if)",
+      "description": "Command tested before running. exec only runs if exit code is 0."
+    },
+    "interval": {
+      "label": "Interval (seconds)",
+      "description": "Polling interval in seconds. 0 for continuous streaming, or higher value for periodic execution."
+    },
+    "restart_interval": {
+      "label": "Restart Interval (seconds)",
+      "description": "Delay before restarting a continuous streaming script if it exits."
+    },
+    "return_type": {
+      "label": "Return Type",
+      "description": "Output format: 'json' or empty/plain (i3blocks format)."
+    },
+    "format": {
+      "label": "Format",
+      "description": "Display template (e.g. '{icon} {}', '{text}', '{}'). Defaults to '{}'."
+    },
+    "format_icons": {
+      "label": "Format Icons (JSON)",
+      "description": "JSON object mapping states or classes to icons, or an array for percentage ranges."
+    },
+    "max_length": {
+      "label": "Max Length",
+      "description": "Maximum character length of the displayed text (0 for unlimited)."
+    },
+    "min_length": {
+      "label": "Min Length",
+      "description": "Minimum character length with padding (0 for no padding)."
+    },
+    "align": {
+      "label": "Alignment",
+      "description": "Alignment when padding: 'left', 'center', or 'right'."
+    },
+    "hide_empty_text": {
+      "label": "Hide Empty Text",
+      "description": "Hide the widget from the bar when the output text is empty."
+    },
+    "escape": {
+      "label": "Escape Markup",
+      "description": "Escape XML/HTML characters in output text."
+    },
+    "exec_on_event": {
+      "label": "Re-run on Event",
+      "description": "Re-execute the script immediately after handling a click or scroll event."
+    },
+    "tooltip": {
+      "label": "Enable Tooltip",
+      "description": "Show a tooltip on hover."
+    },
+    "tooltip_format": {
+      "label": "Tooltip Format",
+      "description": "Custom format string for the tooltip. If empty, uses script tooltip output."
+    },
+    "on_click": {
+      "label": "Left Click Command",
+      "description": "Command to execute when left-clicked."
+    },
+    "on_click_right": {
+      "label": "Right Click Command",
+      "description": "Command to execute when right-clicked."
+    },
+    "on_click_middle": {
+      "label": "Middle Click Command",
+      "description": "Command to execute when middle-clicked."
+    },
+    "on_scroll_up": {
+      "label": "Scroll Up Command",
+      "description": "Command to execute when scrolling up."
+    },
+    "on_scroll_down": {
+      "label": "Scroll Down Command",
+      "description": "Command to execute when scrolling down."
+    },
+    "on_update": {
+      "label": "On Update Command",
+      "description": "Command to execute whenever the module output updates."
+    }
+  }
+}
