@@ -40,7 +40,34 @@ local maConfigEntryId = nil
 local maLibSubTab = "albums" -- "albums" | "artists" | "tracks" | "radio" | "playlists"
 local maLibItems = { albums = {}, artists = {}, tracks = {}, radio = {}, playlists = {} }
 local maLibLoading = { albums = false, artists = false, tracks = false, radio = false, playlists = false }
+local maLibLoadingMore = { albums = false, artists = false, tracks = false, radio = false, playlists = false }
 local maLibLoaded = { albums = false, artists = false, tracks = false, radio = false, playlists = false }
+local maLibHasMore = { albums = false, artists = false, tracks = false, radio = false, playlists = false }
+local MA_PAGE_SIZE = 500
+local MA_MAX_AUTOLOAD = 5000
+
+local imageQueue = {}
+local activeImageDownloads = 0
+local MAX_CONCURRENT_IMAGE_DOWNLOADS = 4
+
+local function processImageQueue()
+    while activeImageDownloads < MAX_CONCURRENT_IMAGE_DOWNLOADS and #imageQueue > 0 do
+        local task = table.remove(imageQueue, 1)
+        activeImageDownloads = activeImageDownloads + 1
+        noctalia.runAsync(task.cmd, function()
+            activeImageDownloads = activeImageDownloads - 1
+            downloadingImages[task.url] = nil
+            if noctalia.fileExists(task.localPath) then
+                downloadedImages[task.url] = task.localPath
+                if not renderScheduled then
+                    renderScheduled = true
+                    panel.setWantsSecondTicks(true)
+                end
+            end
+            processImageQueue()
+        end)
+    end
+end
 
 local function getCleanUrl()
     if type(haUrlRaw) ~= "string" then return "" end
@@ -575,15 +602,21 @@ local function searchMusicAssistant(query)
 end
 
 local function fetchMaLibrary(category, force)
-    if not force and (maLibLoaded[category] or maLibLoading[category]) then
+    if not force and (maLibLoaded[category] or maLibLoading[category] or maLibLoadingMore[category]) then
         return
     end
 
+    if force then
+        maLibItems[category] = {}
+        maLibLoaded[category] = false
+        maLibHasMore[category] = false
+    end
+
     maLibLoading[category] = true
+    maLibLoadingMore[category] = false
     render()
 
     ensureMaConfigEntry(function(entry_id)
-        -- Map UI category to MA media_type: "albums" -> "album", "artists" -> "artist", etc.
         local mediaTypeMap = {
             albums = "album",
             artists = "artist",
@@ -592,28 +625,108 @@ local function fetchMaLibrary(category, force)
             playlists = "playlist",
         }
         local mtype = mediaTypeMap[category] or "album"
+
+        local function fetchPage(offset)
+            local payload = {
+                config_entry_id = entry_id,
+                media_type = mtype,
+                limit = MA_PAGE_SIZE,
+                offset = offset,
+            }
+            haPost("/api/services/music_assistant/get_library?return_response=true", payload, function(resp)
+                local ok, data = pcall(function()
+                    return resp and resp.body and noctalia.json.decode(resp.body)
+                end)
+                local newItems = {}
+                if ok and type(data) == "table" and data.service_response then
+                    newItems = data.service_response.items or {}
+                end
+
+                if offset == 0 then
+                    maLibItems[category] = newItems
+                else
+                    for _, it in ipairs(newItems) do
+                        table.insert(maLibItems[category], it)
+                    end
+                end
+
+                maLibLoading[category] = false
+
+                if #newItems < MA_PAGE_SIZE then
+                    maLibLoadingMore[category] = false
+                    maLibLoaded[category] = true
+                    maLibHasMore[category] = false
+                    render()
+                elseif #maLibItems[category] >= MA_MAX_AUTOLOAD then
+                    maLibLoadingMore[category] = false
+                    maLibLoaded[category] = false
+                    maLibHasMore[category] = true
+                    render()
+                else
+                    maLibHasMore[category] = true
+                    maLibLoadingMore[category] = true
+                    render()
+                    fetchPage(offset + #newItems)
+                end
+            end, function()
+                maLibLoading[category] = false
+                maLibLoadingMore[category] = false
+                maLibLoaded[category] = true
+                render()
+            end)
+        end
+
+        fetchPage(0)
+    end)
+end
+
+local function fetchMaLibraryMore(category)
+    if maLibLoading[category] or maLibLoadingMore[category] or not maLibHasMore[category] then
+        return
+    end
+
+    maLibLoadingMore[category] = true
+    render()
+
+    ensureMaConfigEntry(function(entry_id)
+        local mediaTypeMap = {
+            albums = "album",
+            artists = "artist",
+            tracks = "track",
+            radio = "radio",
+            playlists = "playlist",
+        }
+        local mtype = mediaTypeMap[category] or "album"
+        local offset = #maLibItems[category]
         local payload = {
             config_entry_id = entry_id,
             media_type = mtype,
-            limit = 50,
+            limit = MA_PAGE_SIZE,
+            offset = offset,
         }
         haPost("/api/services/music_assistant/get_library?return_response=true", payload, function(resp)
-            maLibLoading[category] = false
-            maLibLoaded[category] = true
             local ok, data = pcall(function()
                 return resp and resp.body and noctalia.json.decode(resp.body)
             end)
-            if ok and type(data) == "table" then
-                local sr = data.service_response or {}
-                maLibItems[category] = sr.items or {}
+            local newItems = {}
+            if ok and type(data) == "table" and data.service_response then
+                newItems = data.service_response.items or {}
+            end
+
+            for _, it in ipairs(newItems) do
+                table.insert(maLibItems[category], it)
+            end
+
+            maLibLoadingMore[category] = false
+            if #newItems < MA_PAGE_SIZE then
+                maLibLoaded[category] = true
+                maLibHasMore[category] = false
             else
-                maLibItems[category] = {}
+                maLibHasMore[category] = true
             end
             render()
         end, function()
-            maLibLoading[category] = false
-            maLibLoaded[category] = true
-            maLibItems[category] = {}
+            maLibLoadingMore[category] = false
             render()
         end)
     end)
@@ -787,16 +900,8 @@ local function getImagePath(url)
             authHeader = [=[-H "Authorization: Bearer ]=] .. cleanToken .. [=["]=]
         end
         local cmd = string.format("mkdir -p %q && curl -k -s -L %s -o %q %q", cacheDir, authHeader, localPath, fullUrl)
-        noctalia.runAsync(cmd, function()
-            downloadingImages[url] = nil
-            if noctalia.fileExists(localPath) then
-                downloadedImages[url] = localPath
-                if not renderScheduled then
-                    renderScheduled = true
-                    panel.setWantsSecondTicks(true)
-                end
-            end
-        end)
+        table.insert(imageQueue, { url = url, localPath = localPath, cmd = cmd })
+        processImageQueue()
     end
 
     return nil
@@ -1229,14 +1334,14 @@ local function buildMusicAssistantView()
     table.insert(children, ui.row({ align = "center", gap = 6 }, subTabButtons))
 
     -- Trigger fetch if not loaded or loading
-    if not maLibLoaded[maLibSubTab] and not maLibLoading[maLibSubTab] then
+    if not maLibLoaded[maLibSubTab] and not maLibLoading[maLibSubTab] and not maLibLoadingMore[maLibSubTab] and #maLibItems[maLibSubTab] == 0 then
         fetchMaLibrary(maLibSubTab)
     end
 
-    if maLibLoading[maLibSubTab] then
+    if maLibLoading[maLibSubTab] and #maLibItems[maLibSubTab] == 0 then
         table.insert(children, ui.column({ align = "center", justify = "center", flexGrow = 1, gap = 8, padding = 32 }, {
             ui.glyph({ name = "loader", size = 32, color = "primary" }),
-            ui.label({ text = "Loading library...", color = "on_surface_variant" }),
+            ui.label({ text = tr("ma_loading_library") or "Loading library...", color = "on_surface_variant" }),
         }))
         return ui.column({ flexGrow = 1, gap = 10, align = "stretch" }, children)
     end
@@ -1317,10 +1422,30 @@ local function buildMusicAssistantView()
         }))
     end
 
-    if #libList == 0 then
+    if maLibHasMore[maLibSubTab] then
+        if maLibLoadingMore[maLibSubTab] then
+            table.insert(libList, ui.row({ align = "center", justify = "center", padding = 12, gap = 8 }, {
+                ui.glyph({ name = "loader", size = 20, color = "primary" }),
+                ui.label({ text = tr("ma_loading_more") or "Loading more…", color = "on_surface_variant", fontSize = 12 }),
+            }))
+        else
+            table.insert(libList, ui.row({ align = "center", justify = "center", padding = 8 }, {
+                ui.button({
+                    text = tr("ma_load_more") or "Load more…",
+                    glyph = "arrow-down",
+                    variant = "default",
+                    onClick = function()
+                        fetchMaLibraryMore(maLibSubTab)
+                    end,
+                }),
+            }))
+        end
+    end
+
+    if #libList == 0 and not maLibLoading[maLibSubTab] then
         table.insert(libList, ui.column({ align = "center", justify = "center", padding = 24 }, {
             ui.glyph({ name = defaultGlyph, size = 36, color = "on_surface_variant" }),
-            ui.label({ text = "No library items found", color = "on_surface_variant" }),
+            ui.label({ text = tr("ma_no_results") or "No library items found", color = "on_surface_variant" }),
         }))
     end
 
