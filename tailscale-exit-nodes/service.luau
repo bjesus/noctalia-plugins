@@ -105,22 +105,20 @@ noctalia.state.watch("ts_command", function(cmd)
     if isRunning then
       executeCommand("tailscale down")
     else
-      executeCommand("tailscale up --operator=$USER")
+      executeCommand("tailscale up")
     end
   elseif action == "connect" then
-    executeCommand("tailscale up --operator=$USER")
+    executeCommand("tailscale up")
   elseif action == "disconnect" then
     executeCommand("tailscale down")
   elseif action == "select_exit_node" then
     local target = cmd.target or ""
     if target == "" then
       executeCommand("tailscale set --exit-node=")
+    elseif not isRunning then
+      executeCommand("tailscale set --exit-node=" .. target .. " && tailscale up")
     else
-      if not isRunning then
-        executeCommand("tailscale up --operator=$USER --exit-node=" .. target)
-      else
-        executeCommand("tailscale set --exit-node=" .. target)
-      end
+      executeCommand("tailscale set --exit-node=" .. target)
     end
   elseif action == "refresh" then
     refreshStatus()
