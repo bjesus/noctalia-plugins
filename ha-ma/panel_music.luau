@@ -7,12 +7,35 @@ local status = "unconfigured"
 local entityStates = {}
 local maConfigEntryId = nil
 local maSelectedSpeaker = nil
+local latestChosenSpeaker = noctalia.state.get("last_chosen_speaker")
+local userExplicitlySelected = false
 
 -- Navigation state
 local activeTab = "music" -- "music" | "speakers"
 local sliderDraft = {}
 local sliderDraftUntil = {}
-local volumePending = {}
+local SLIDER_HOLD_MS = 3500
+local patchSeq = 0
+
+local function nowMs()
+    if type(noctalia.nowMs) == "function" then
+        local ms = noctalia.nowMs()
+        if type(ms) == "number" and ms > 0 then
+            return ms
+        end
+    end
+    return os.time() * 1000
+end
+
+local function sendEntityPatch(eid, fields, states)
+    patchSeq = patchSeq + 1
+    noctalia.state.set("entity_patch", {
+        seq = nowMs() * 1000 + patchSeq,
+        eid = eid,
+        fields = fields,
+        states = states,
+    })
+end
 
 -- Library state
 local maLibSubTab = "albums" -- "albums" | "artists" | "tracks" | "radio" | "playlists"
@@ -21,8 +44,8 @@ local maLibLoading = { albums = false, artists = false, tracks = false, radio = 
 local maLibLoadingMore = { albums = false, artists = false, tracks = false, radio = false, playlists = false }
 local maLibLoaded = { albums = false, artists = false, tracks = false, radio = false, playlists = false }
 local maLibHasMore = { albums = false, artists = false, tracks = false, radio = false, playlists = false }
-local MA_PAGE_SIZE = 500
-local MA_MAX_AUTOLOAD = 5000
+local MA_PAGE_SIZE = 50
+local MA_MAX_AUTOLOAD = 50
 
 -- Search state
 local maSearchQuery = ""
@@ -30,10 +53,13 @@ local maSearching = false
 local maSearchCategory = "all"
 local maSearchResults = { artists = {}, albums = {}, playlists = {}, tracks = {} }
 
+local isPanelOpen = false
 
 -- Image cache & download queue
 local downloadedImages = {}
 local downloadingImages = {}
+local urlToPathCache = {}
+local knownExistingFiles = {}
 local imageQueue = {}
 local activeImageDownloads = 0
 local MAX_CONCURRENT_IMAGE_DOWNLOADS = 4
@@ -50,7 +76,8 @@ local function processImageQueue()
             downloadingImages[task.url] = nil
             if noctalia.fileExists(task.localPath) then
                 downloadedImages[task.url] = task.localPath
-                if not renderScheduled then
+                knownExistingFiles[task.localPath] = true
+                if isPanelOpen and not renderScheduled then
                     renderScheduled = true
                     panel.setWantsSecondTicks(true)
                 end
@@ -89,9 +116,19 @@ end
 
 local function hashString(str)
     local hash = 5381
-    for i = 1, #str do
-        local b = string.byte(str, i)
-        hash = (hash * 33 + b) % 2147483647
+    local len = #str
+    if len > 64 then
+        for i = 1, 16 do
+            hash = (hash * 33 + string.byte(str, i)) % 2147483647
+        end
+        for i = len - 15, len do
+            hash = (hash * 33 + string.byte(str, i)) % 2147483647
+        end
+        hash = (hash * 33 + len) % 2147483647
+    else
+        for i = 1, len do
+            hash = (hash * 33 + string.byte(str, i)) % 2147483647
+        end
     end
     return string.format("%x", hash)
 end
@@ -104,21 +141,21 @@ end
 
 local function getImagePath(url)
     if not url or url == "" then return nil end
-    if downloadedImages[url] and noctalia.fileExists(downloadedImages[url]) then
-        return downloadedImages[url]
+
+    local localPath = urlToPathCache[url]
+    if not localPath then
+        local cacheDir = getThumbCacheDir()
+        local hash = cleanFilename(url) .. ".jpg"
+        localPath = cacheDir .. "/" .. hash
+        urlToPathCache[url] = localPath
     end
 
-    local fullUrl = url
-    if url:sub(1, 1) == "/" then
-        fullUrl = getCleanUrl() .. url
+    if knownExistingFiles[localPath] then
+        return localPath
     end
-
-    local cacheDir = getThumbCacheDir()
-    local hash = cleanFilename(url) .. ".jpg"
-    local localPath = cacheDir .. "/" .. hash
 
     if noctalia.fileExists(localPath) then
-        downloadedImages[url] = localPath
+        knownExistingFiles[localPath] = true
         return localPath
     end
 
@@ -126,10 +163,14 @@ local function getImagePath(url)
         downloadingImages[url] = true
         local cleanToken = getCleanToken()
         local authHeader = ""
-        if url:sub(1, 1) == "/" and cleanToken ~= "" then
-            authHeader = [=[-H "Authorization: Bearer ]=] .. cleanToken .. [=["]=]
+        local fullUrl = url
+        if url:sub(1, 1) == "/" then
+            fullUrl = getCleanUrl() .. url
+            if cleanToken ~= "" then
+                authHeader = [=[-H "Authorization: Bearer ]=] .. cleanToken .. [=["]=]
+            end
         end
-        local cmd = string.format("mkdir -p %q && curl -k -s -L %s -o %q %q", cacheDir, authHeader, localPath, fullUrl)
+        local cmd = string.format("mkdir -p %q && curl -k -s -L %s -o %q %q", getThumbCacheDir(), authHeader, localPath, fullUrl)
         table.insert(imageQueue, { url = url, localPath = localPath, cmd = cmd })
         processImageQueue()
     end
@@ -193,6 +234,12 @@ local function haPost(path, body, callback, onFailure)
         local httpStatus = response and response.status or 0
         if httpStatus >= 200 and httpStatus < 300 then
             noctalia.log("[panel_music] haPost " .. path .. " success (" .. tostring(httpStatus) .. ")")
+            if path:sub(1, 14) == "/api/services/" and not path:find("return_response", 1, true) and response and response.body and #response.body > 2 then
+                local ok, decoded = pcall(function() return noctalia.json.decode(response.body) end)
+                if ok and type(decoded) == "table" and #decoded > 0 then
+                    sendEntityPatch(nil, nil, decoded)
+                end
+            end
             if callback then callback(response) end
             return
         end
@@ -264,6 +311,14 @@ local function fetchFreshSpeakers(onDone)
             return noctalia.json.decode(resp.body)
         end)
         if ok and type(mediaPlayers) == "table" then
+            local currentEntities = noctalia.state.get("entities")
+            if type(currentEntities) == "table" then
+                for k, v in pairs(currentEntities) do
+                    if not k:match("^media_player%.") then
+                        entityStates[k] = v
+                    end
+                end
+            end
             local seenMediaPlayers = {}
             for _, s in ipairs(mediaPlayers) do
                 local eid = type(s) == "table" and s.entity_id or nil
@@ -293,8 +348,10 @@ local function fetchFreshSpeakers(onDone)
                     entityStates[eid] = nil
                 end
             end
-            noctalia.state.set("entities", entityStates)
-            render()
+            sendEntityPatch(nil, nil, mediaPlayers)
+            if isPanelOpen then
+                render()
+            end
         end
         if onDone then onDone() end
     end, function()
@@ -306,12 +363,106 @@ local function getSpeakerName(entity, eid)
     return (entity and entity.friendly_name) or eid
 end
 
+local function getAvailableSpeakers()
+    local rawSpeakers = {}
+    local hasMaSpeakers = false
+    for eid, entity in pairs(entityStates) do
+        if entity.domain == "media_player" then
+            local st = entity.state
+            if st and st ~= "unavailable" and st ~= "unknown" then
+                table.insert(rawSpeakers, entity)
+                if entity.mass_player_type and entity.mass_player_type ~= "" then
+                    hasMaSpeakers = true
+                end
+            end
+        end
+    end
+
+    local activeSpeakers = {}
+    if hasMaSpeakers then
+        for _, entity in ipairs(rawSpeakers) do
+            if entity.mass_player_type and entity.mass_player_type ~= "" then
+                table.insert(activeSpeakers, entity)
+            end
+        end
+    else
+        activeSpeakers = rawSpeakers
+    end
+
+    table.sort(activeSpeakers, function(a, b)
+        local nameA = (a.friendly_name or a.entity_id or ""):lower()
+        local nameB = (b.friendly_name or b.entity_id or ""):lower()
+        return nameA < nameB
+    end)
+
+    return activeSpeakers
+end
+
+local function resolveSelectedSpeaker(availableSpeakers)
+    if #availableSpeakers == 0 then
+        return nil
+    end
+
+    local availableMap = {}
+    for _, spk in ipairs(availableSpeakers) do
+        availableMap[spk.entity_id] = spk
+    end
+
+    -- If the user explicitly picked a speaker during this session and it is still available, keep it
+    if userExplicitlySelected and maSelectedSpeaker and availableMap[maSelectedSpeaker] then
+        return maSelectedSpeaker
+    end
+
+    -- Find currently playing speakers
+    local playing = {}
+    for _, spk in ipairs(availableSpeakers) do
+        if spk.state == "playing" then
+            table.insert(playing, spk.entity_id)
+        end
+    end
+
+    -- 1. "by default, it should be on the currently playing speaker"
+    if #playing == 1 then
+        return playing[1]
+    end
+
+    -- 2. "and if that isn't available or if there are a few, it should go to latest choosen speaker"
+    local lastChosen = latestChosenSpeaker or noctalia.state.get("last_chosen_speaker")
+    if lastChosen and availableMap[lastChosen] then
+        return lastChosen
+    end
+
+    -- If multiple are playing and lastChosen wasn't one of them (or wasn't set), fall back to the first playing speaker
+    if #playing > 0 then
+        return playing[1]
+    end
+
+    -- Fallback to the first available speaker
+    return availableSpeakers[1].entity_id
+end
+
+local function setDestinationSpeaker(eid)
+    if not eid or eid == "" then return end
+    userExplicitlySelected = true
+    maSelectedSpeaker = eid
+    latestChosenSpeaker = eid
+    noctalia.state.set("last_chosen_speaker", eid)
+    render()
+end
+
 local function playMaItem(itemUri, mediaType)
     local player = maSelectedSpeaker
+    if not player then
+        local availableSpeakers = getAvailableSpeakers()
+        player = resolveSelectedSpeaker(availableSpeakers)
+    end
     if not player then
         for eid, e in pairs(entityStates) do
             if e.domain == "media_player" then player = eid; break end
         end
+    end
+    if player then
+        setDestinationSpeaker(player)
     end
     local playerName = (entityStates[player] and entityStates[player].friendly_name) or player
     haPost("/api/services/music_assistant/play_media", {
@@ -384,57 +535,38 @@ local function fetchMaLibrary(category, force)
         }
         local mtype = mediaTypeMap[category] or "album"
 
-        local function fetchPage(offset)
-            local payload = {
-                config_entry_id = entry_id,
-                media_type = mtype,
-                limit = MA_PAGE_SIZE,
-                offset = offset,
-            }
-            haPost("/api/services/music_assistant/get_library?return_response=true", payload, function(resp)
-                local ok, data = pcall(function()
-                    return resp and resp.body and noctalia.json.decode(resp.body)
-                end)
-                local newItems = {}
-                if ok and type(data) == "table" and data.service_response then
-                    newItems = data.service_response.items or {}
-                end
-
-                if offset == 0 then
-                    maLibItems[category] = newItems
-                else
-                    for _, it in ipairs(newItems) do
-                        table.insert(maLibItems[category], it)
-                    end
-                end
-
-                maLibLoading[category] = false
-
-                if #newItems < MA_PAGE_SIZE then
-                    maLibLoadingMore[category] = false
-                    maLibLoaded[category] = true
-                    maLibHasMore[category] = false
-                    render()
-                elseif #maLibItems[category] >= MA_MAX_AUTOLOAD then
-                    maLibLoadingMore[category] = false
-                    maLibLoaded[category] = false
-                    maLibHasMore[category] = true
-                    render()
-                else
-                    maLibHasMore[category] = true
-                    maLibLoadingMore[category] = true
-                    render()
-                    fetchPage(offset + #newItems)
-                end
-            end, function()
-                maLibLoading[category] = false
-                maLibLoadingMore[category] = false
-                maLibLoaded[category] = true
-                render()
+        local payload = {
+            config_entry_id = entry_id,
+            media_type = mtype,
+            limit = MA_PAGE_SIZE,
+            offset = 0,
+        }
+        haPost("/api/services/music_assistant/get_library?return_response=true", payload, function(resp)
+            local ok, data = pcall(function()
+                return resp and resp.body and noctalia.json.decode(resp.body)
             end)
-        end
+            local newItems = {}
+            if ok and type(data) == "table" and data.service_response then
+                newItems = data.service_response.items or {}
+            end
 
-        fetchPage(0)
+            maLibItems[category] = newItems
+            maLibLoading[category] = false
+            maLibLoadingMore[category] = false
+            maLibLoaded[category] = true
+
+            if #newItems < MA_PAGE_SIZE then
+                maLibHasMore[category] = false
+            else
+                maLibHasMore[category] = true
+            end
+            render()
+        end, function()
+            maLibLoading[category] = false
+            maLibLoadingMore[category] = false
+            maLibLoaded[category] = true
+            render()
+        end)
     end)
 end
 
@@ -563,48 +695,52 @@ local function getLibSubtitle(item, category)
     return nil
 end
 
--- Currently Playing Banner
-local function buildNowPlayingBanner()
-    local targetEntity = entityStates[maSelectedSpeaker]
-    if not targetEntity or not targetEntity.state or targetEntity.state == "off" or targetEntity.state == "unavailable" then
+-- Destination Speaker Dropdown for Library Tab
+local function buildDestinationSpeakerRow()
+    local availableSpeakers = getAvailableSpeakers()
+    maSelectedSpeaker = resolveSelectedSpeaker(availableSpeakers)
+
+    if #availableSpeakers == 0 then
         return nil
     end
 
-    local isPlaying = targetEntity.state == "playing"
-    local isPaused = targetEntity.state == "paused"
-    local hasMedia = (targetEntity.media_title and targetEntity.media_title ~= "")
-
-    if not isPlaying and not isPaused and not hasMedia then
-        return nil
+    local speakerOptions = {}
+    local selectedIndex = 0
+    for idx, spk in ipairs(availableSpeakers) do
+        local name = getSpeakerName(spk, spk.entity_id)
+        table.insert(speakerOptions, name)
+        if spk.entity_id == maSelectedSpeaker then
+            selectedIndex = idx - 1 -- 0-based for ui.select
+        end
     end
-
-    local title = targetEntity.media_title or "Playback"
-    local artist = targetEntity.media_artist or (targetEntity.friendly_name or maSelectedSpeaker)
 
     return ui.row({
         align = "center",
-        gap = 10,
-        padding = 8,
+        gap = 8,
+        padding = { 4, 8, 4, 8 },
         radius = 8,
-        fill = "primary/0.15",
+        fill = "surface_variant/0.25",
     }, {
-        renderCover(targetEntity.entity_picture, 40, "device-speaker", 6),
-        ui.column({ flexGrow = 1, gap = 2 }, {
-            ui.label({ text = title, fontWeight = "bold", maxLines = 1, color = "primary" }),
-            ui.label({ text = artist, fontSize = 12, color = "on_surface_variant", maxLines = 1 }),
-        }),
-        ui.button({
-            glyph = isPlaying and "player-pause" or "player-play",
-            variant = "primary",
-            onClick = function()
-                haPost("/api/services/media_player/media_play_pause", { entity_id = maSelectedSpeaker })
-            end,
-        }),
-        ui.button({
-            glyph = "player-track-next",
-            variant = "default",
-            onClick = function()
-                haPost("/api/services/media_player/media_next_track", { entity_id = maSelectedSpeaker })
+        ui.glyph({ name = "device-speaker", size = 18, color = "primary" }),
+        ui.label({ text = tr("target_player"), fontSize = 12, fontWeight = "bold", color = "on_surface_variant" }),
+        ui.select({
+            key = "ma_destination_speaker_select",
+            options = speakerOptions,
+            selectedIndex = selectedIndex,
+            flexGrow = 1,
+            controlSize = "sm",
+            onChange = function(idx, text)
+                local i = tonumber(idx)
+                if i and availableSpeakers[i + 1] then
+                    setDestinationSpeaker(availableSpeakers[i + 1].entity_id)
+                elseif text then
+                    for _, spk in ipairs(availableSpeakers) do
+                        if getSpeakerName(spk, spk.entity_id) == text then
+                            setDestinationSpeaker(spk.entity_id)
+                            break
+                        end
+                    end
+                end
             end,
         }),
     })
@@ -621,6 +757,9 @@ end
 
 -- Speaker Grouping & Linking Tab
 local function buildSpeakersView()
+    local allAvailable = getAvailableSpeakers()
+    maSelectedSpeaker = resolveSelectedSpeaker(allAvailable)
+
     -- Collect all non-off/unavailable media_player entities
     local rawSpeakers = {}
     local hasMaSpeakers = false
@@ -694,7 +833,7 @@ local function buildSpeakersView()
 
 
 
-    -- Check if there's an active output selected (for conditional Link button)
+    -- Check if there's an active speaker selected (for conditional Link button)
     local hasActiveOutput = maSelectedSpeaker and maSelectedSpeaker ~= ""
         and entityStates[maSelectedSpeaker]
         and entityStates[maSelectedSpeaker].state ~= "off"
@@ -745,7 +884,7 @@ local function buildSpeakersView()
         local isCurrentMaster = (eid == maSelectedSpeaker)
         local isMuted = entity.is_volume_muted or false
         local rawVol = entity.volume_level
-        local curVol = sliderDraft[eid] or (rawVol and math.floor(rawVol * 100 + 0.5) or 50)
+        local curVol = sliderDraft[eid] or (rawVol and math.floor(rawVol * 100 + 0.5)) or 0
         local displayName = getSpeakerName(entity, eid)
 
         local volSlider = ui.slider({
@@ -755,26 +894,26 @@ local function buildSpeakersView()
             step = 1,
             value = curVol,
             onChange = function(v)
-                local pct = math.floor((tonumber(v) or 50) + 0.5)
-                sliderDraft[eid] = pct
-                sliderDraftUntil[eid] = os.clock() + 3.0
-                if entityStates[eid] then
-                    entityStates[eid].volume_level = pct / 100.0
+                local num = tonumber(v)
+                if num then
+                    local pct = math.floor(num + 0.5)
+                    sliderDraft[eid] = pct
+                    sliderDraftUntil[eid] = nowMs() + SLIDER_HOLD_MS
                 end
-                volumePending[eid] = { pct = pct, time = os.clock() }
-                render()
             end,
             onDragEnd = function(v)
                 local num = tonumber(v)
-                local pct = (num and math.floor(num + 0.5)) or sliderDraft[eid] or 50
-                sliderDraft[eid] = pct
-                sliderDraftUntil[eid] = os.clock() + 3.0
-                if entityStates[eid] then
-                    entityStates[eid].volume_level = pct / 100.0
+                local pct = sliderDraft[eid] or (num and math.floor(num + 0.5))
+                if pct then
+                    sliderDraft[eid] = pct
+                    sliderDraftUntil[eid] = nowMs() + SLIDER_HOLD_MS
+                    if entityStates[eid] then
+                        entityStates[eid].volume_level = pct / 100.0
+                    end
+                    sendEntityPatch(eid, { volume_level = pct / 100.0 })
+                    haPost("/api/services/media_player/volume_set", { entity_id = eid, volume_level = pct / 100.0 })
+                    render()
                 end
-                volumePending[eid] = nil
-                haPost("/api/services/media_player/volume_set", { entity_id = eid, volume_level = pct / 100.0 })
-                render()
             end,
             flexGrow = 1,
         })
@@ -893,8 +1032,7 @@ local function buildSpeakersView()
             glyph = isCurrentMaster and "check" or "circle",
             variant = isCurrentMaster and "primary" or "default",
             onClick = function()
-                maSelectedSpeaker = isGrouped and (leaderEid or eid) or eid
-                render()
+                setDestinationSpeaker(isGrouped and (leaderEid or eid) or eid)
             end,
         })
 
@@ -935,9 +1073,7 @@ local function buildSpeakersView()
         local displayName = getSpeakerName(entity, eid)
 
         local subtitle = ""
-        if isCurrentMaster then
-            subtitle = "Active Output"
-        elseif entity.state and entity.state ~= "idle" and entity.state ~= "off" and entity.state ~= "unavailable" then
+        if entity.state and entity.state ~= "idle" and entity.state ~= "off" and entity.state ~= "unavailable" then
             subtitle = entity.state
         end
 
@@ -956,8 +1092,7 @@ local function buildSpeakersView()
             glyph = isCurrentMaster and "check" or "circle",
             variant = isCurrentMaster and "primary" or "default",
             onClick = function()
-                maSelectedSpeaker = eid
-                render()
+                setDestinationSpeaker(eid)
             end,
         })
 
@@ -968,10 +1103,10 @@ local function buildSpeakersView()
         table.insert(rightItems, selectBtn)
 
         local infoChildren = {
-            ui.label({ text = displayName, fontWeight = isCurrentMaster and "bold" or "medium", maxLines = 1 }),
+            ui.label({ text = displayName, fontWeight = "medium", maxLines = 1 }),
         }
         if subtitle ~= "" then
-            table.insert(infoChildren, ui.label({ text = subtitle, fontSize = 11, color = isCurrentMaster and "primary" or "on_surface_variant" }))
+            table.insert(infoChildren, ui.label({ text = subtitle, fontSize = 11, color = "on_surface_variant" }))
         end
 
         return ui.row({
@@ -980,7 +1115,7 @@ local function buildSpeakersView()
             gap = 8,
             padding = 10,
             radius = 8,
-            fill = isCurrentMaster and "primary/0.12" or "surface_variant/0.25",
+            fill = "surface_variant/0.25",
         }, {
             ui.column({ flexGrow = 1, gap = 2 }, infoChildren),
             ui.row({ align = "center", gap = 6 }, rightItems),
@@ -1018,8 +1153,7 @@ local function buildSpeakersView()
                     glyph = isGroupSelected and "check" or "circle",
                     variant = isGroupSelected and "primary" or "default",
                     onClick = function()
-                        maSelectedSpeaker = leaderEid
-                        render()
+                        setDestinationSpeaker(leaderEid)
                     end,
                 })
 
@@ -1074,6 +1208,7 @@ local function buildSpeakersView()
 end
 
 render = function()
+    if not isPanelOpen then return end
     local children = {}
 
     -- Header
@@ -1084,8 +1219,7 @@ render = function()
             maLibLoaded = { albums = false, artists = false, tracks = false, radio = false, playlists = false }
             fetchMaLibrary(maLibSubTab, true)
             fetchFreshSpeakers()
-            noctalia.state.set("command", "refresh")
-            noctalia.state.set("panel_open_signal", os.clock())
+            noctalia.state.set("panel_open_signal", nowMs())
             noctalia.notify(noctalia.tr("panel.music_assistant_title"), "Refreshing...")
         end }),
         ui.button({ glyph = "close", onClick = function() panel.close() end }),
@@ -1118,10 +1252,10 @@ render = function()
         return
     end
 
-    -- Now playing card
-    local nowPlaying = buildNowPlayingBanner()
-    if nowPlaying then
-        table.insert(children, nowPlaying)
+    -- Destination speaker dropdown
+    local destRow = buildDestinationSpeakerRow()
+    if destRow then
+        table.insert(children, destRow)
     end
 
     local isSearching = noctalia.string.trim(maSearchQuery) ~= ""
@@ -1374,20 +1508,23 @@ render = function()
 end
 
 function onOpen(_context)
+    isPanelOpen = true
     status = noctalia.state.get("connection_status") or "unconfigured"
     entityStates = noctalia.state.get("entities") or {}
     sliderDraft = {}
     sliderDraftUntil = {}
-    volumePending = {}
+    userExplicitlySelected = false
+    latestChosenSpeaker = noctalia.state.get("last_chosen_speaker") or latestChosenSpeaker
+    maSelectedSpeaker = nil
 
     ensureMaConfigEntry()
 
-    -- Signal background service to reconnect and refresh
-    noctalia.state.set("command", "refresh")
-    noctalia.state.set("panel_open_signal", os.clock())
+    -- Signal background service to refresh snapshot (with 600ms dedup in service_sse)
+    noctalia.state.set("panel_open_signal", nowMs())
 
-    -- Immediately fetch live states directly from Home Assistant
-    fetchFreshSpeakers()
+    if status ~= "connected" then
+        fetchFreshSpeakers()
+    end
 
     -- Context-aware default tab: if any speaker is playing, paused, or has active media, open Speakers tab
     local anythingPlaying = false
@@ -1406,23 +1543,22 @@ function onOpen(_context)
 end
 
 function onClose()
+    isPanelOpen = false
     panel.setWantsSecondTicks(false)
 end
 
 function update()
+    if not isPanelOpen then
+        panel.setWantsSecondTicks(false)
+        return
+    end
+
     if renderScheduled then
         renderScheduled = false
         render()
     end
 
-    local now = os.clock()
-    for eid, pending in pairs(volumePending) do
-        if (now - pending.time) >= 0.35 then
-            volumePending[eid] = nil
-            haPost("/api/services/media_player/volume_set", { entity_id = eid, volume_level = pending.pct / 100.0 })
-        end
-    end
-
+    local now = nowMs()
     local expired = false
     for eid, expiry in pairs(sliderDraftUntil) do
         if now >= expiry then
@@ -1438,7 +1574,10 @@ end
 
 noctalia.state.watch("entities", function(value)
     entityStates = value or {}
-    local now = os.clock()
+    if not isPanelOpen then
+        return
+    end
+    local now = nowMs()
     for eid, expiry in pairs(sliderDraftUntil) do
         if now >= expiry then
             sliderDraft[eid] = nil
@@ -1450,7 +1589,87 @@ end)
 
 noctalia.state.watch("connection_status", function(value)
     status = value or "unconfigured"
+    if not isPanelOpen then
+        return
+    end
     render()
 end)
 
-panel.setWantsSecondTicks(true)
+function onIpc(event, payload)
+    if not event or event == "" then return end
+    event = event:lower()
+
+    local available = getAvailableSpeakers()
+    local targetEid = resolveSelectedSpeaker(available)
+    if not targetEid then return end
+    local targetEntity = entityStates[targetEid]
+    local name = getSpeakerName(targetEntity, targetEid)
+
+    if event == "toggle_pause" or event == "toggle-pause" or event == "play_pause" or event == "play-pause" or event == "toggle" then
+        haPost("/api/services/media_player/media_play_pause", { entity_id = targetEid })
+        local isPlaying = targetEntity and targetEntity.state == "playing"
+        noctalia.notify("Music Assistant", (isPlaying and "Pausing " or "Playing on ") .. name)
+
+    elseif event == "play" then
+        haPost("/api/services/media_player/media_play", { entity_id = targetEid })
+        noctalia.notify("Music Assistant", "Playing on " .. name)
+
+    elseif event == "pause" then
+        haPost("/api/services/media_player/media_pause", { entity_id = targetEid })
+        noctalia.notify("Music Assistant", "Pausing " .. name)
+
+    elseif event == "stop" then
+        haPost("/api/services/media_player/media_stop", { entity_id = targetEid })
+        noctalia.notify("Music Assistant", "Stopped " .. name)
+
+    elseif event == "next" or event == "next_track" or event == "next-track" then
+        haPost("/api/services/media_player/media_next_track", { entity_id = targetEid })
+
+    elseif event == "previous" or event == "previous_track" or event == "previous-track" or event == "prev" then
+        haPost("/api/services/media_player/media_previous_track", { entity_id = targetEid })
+
+    elseif event == "volume_up" or event == "volume-up" or event == "volume_down" or event == "volume-down" then
+        local step = tonumber(payload) or 0.05
+        if step > 1.0 then step = step / 100.0 end
+        local currentVol = targetEntity and targetEntity.volume_level or 0.5
+        local newVol
+        if event:match("up") then
+            newVol = math.min(1.0, currentVol + step)
+        else
+            newVol = math.max(0.0, currentVol - step)
+        end
+        if targetEntity then
+            targetEntity.volume_level = newVol
+            entityStates[targetEid].volume_level = newVol
+        end
+        sendEntityPatch(targetEid, { volume_level = newVol })
+        haPost("/api/services/media_player/volume_set", { entity_id = targetEid, volume_level = newVol })
+        noctalia.notify(name, string.format("Volume: %d%%", math.floor(newVol * 100 + 0.5)))
+        if isPanelOpen then render() end
+
+    elseif event == "volume_mute" or event == "volume-mute" or event == "mute" then
+        local isMuted = targetEntity and targetEntity.is_volume_muted or false
+        local newMuted = not isMuted
+        if targetEntity then
+            targetEntity.is_volume_muted = newMuted
+            entityStates[targetEid].is_volume_muted = newMuted
+        end
+        sendEntityPatch(targetEid, { is_volume_muted = newMuted })
+        haPost("/api/services/media_player/volume_mute", { entity_id = targetEid, is_volume_muted = newMuted })
+        noctalia.notify(name, newMuted and "Muted" or "Unmuted")
+        if isPanelOpen then render() end
+
+    elseif event == "select_speaker" or event == "set_speaker" then
+        if payload and payload ~= "" then
+            for eid, e in pairs(entityStates) do
+                if e.domain == "media_player" then
+                    if eid == payload or (e.friendly_name and e.friendly_name:lower() == payload:lower()) then
+                        setDestinationSpeaker(eid)
+                        noctalia.notify("Music Assistant", "Selected: " .. getSpeakerName(e, eid))
+                        break
+                    end
+                end
+            end
+        end
+    end
+end

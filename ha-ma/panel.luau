@@ -7,13 +7,36 @@ local entityStates = {}
 local status = "unconfigured"
 local expandedEntityId = nil
 local sliderDraft = {}
-local sliderDirty = {}
+local sliderDraftUntil = {}
+local isPanelOpen = false
 
 local pendingToggle = {}
-local pendingSince = {} -- entity_id -> os.clock() when toggle was requested
+local pendingSince = {} -- entity_id -> nowMs() when toggle was requested
 
-local PENDING_TIMEOUT_SECONDS = 8
+local PENDING_TIMEOUT_MS = 8000
+local SLIDER_HOLD_MS = 3500
 local renderScheduled = false
+local patchSeq = 0
+
+local function nowMs()
+    if type(noctalia.nowMs) == "function" then
+        local ms = noctalia.nowMs()
+        if type(ms) == "number" and ms > 0 then
+            return ms
+        end
+    end
+    return os.time() * 1000
+end
+
+local function sendEntityPatch(eid, fields, states)
+    patchSeq = patchSeq + 1
+    noctalia.state.set("entity_patch", {
+        seq = nowMs() * 1000 + patchSeq,
+        eid = eid,
+        fields = fields,
+        states = states,
+    })
+end
 
 -- Panel navigation: "devices" | "music" | "speakers" | "browser"
 local activeTab = "devices"
@@ -22,7 +45,7 @@ local browserLoading = false
 local browserLoadingSince = nil
 local browserFailed = false
 
-local BROWSER_TIMEOUT_SECONDS = 20
+local BROWSER_TIMEOUT_MS = 20000
 local MAX_BROWSER_ROWS = 200
 local searchText = ""
 local monitoredEntities = {} -- current monitored list (owned here, saved to file)
@@ -59,7 +82,7 @@ local function processImageQueue()
             downloadingImages[task.url] = nil
             if noctalia.fileExists(task.localPath) then
                 downloadedImages[task.url] = task.localPath
-                if not renderScheduled then
+                if isPanelOpen and not renderScheduled then
                     renderScheduled = true
                     panel.setWantsSecondTicks(true)
                 end
@@ -70,8 +93,10 @@ local function processImageQueue()
 end
 
 local function getCleanUrl()
-    if type(haUrlRaw) ~= "string" then return "" end
-    return (haUrlRaw:gsub("/$", ""))
+    local u = noctalia.getConfig("ha_url")
+    if type(u) ~= "string" or u == "" then u = haUrlRaw end
+    if type(u) ~= "string" then return "" end
+    return (u:gsub("/+$", ""))
 end
 
 local function tr(key, subst)
@@ -95,8 +120,10 @@ local function getStatusText()
 end
 
 local function getCleanToken()
-    if type(haToken) ~= "string" then return "" end
-    return haToken:gsub("^%s+", ""):gsub("%s+$", "")
+    local t = noctalia.getConfig("ha_token")
+    if type(t) ~= "string" or t == "" then t = haToken end
+    if type(t) ~= "string" then return "" end
+    return t:gsub("^%s+", ""):gsub("%s+$", "")
 end
 
 local function haPost(path, body, callback, onFailure)
@@ -120,6 +147,14 @@ local function haPost(path, body, callback, onFailure)
     }, function(response: HttpResponse)
         local httpStatus = response and response.status or 0
         if httpStatus >= 200 and httpStatus < 300 then
+            if path:match("^/api/services/") and not path:find("return_response=true", 1, true) and response and response.body and response.body ~= "" then
+                local ok, changed = pcall(function()
+                    return noctalia.json.decode(response.body)
+                end)
+                if ok and type(changed) == "table" and #changed > 0 then
+                    sendEntityPatch(nil, nil, changed)
+                end
+            end
             if callback then callback(response) end
             return
         end
@@ -361,7 +396,7 @@ end
 local function fetchAllEntities()
     if browserLoading then return end
     browserLoading = true
-    browserLoadingSince = os.clock()
+    browserLoadingSince = nowMs()
     browserFailed = false
     render()
 
@@ -382,7 +417,7 @@ end
 -- Pending toggle reconciliation
 local function isPendingTimedOut(eid, now)
     local start = pendingSince[eid]
-    return not start or (now - start) > PENDING_TIMEOUT_SECONDS
+    return not start or (now - start) > PENDING_TIMEOUT_MS
 end
 
 local function clearPending(eid)
@@ -433,7 +468,13 @@ local function actEntity(eid)
     else
         local newState = entity.state == "on" and "off" or "on"
         pendingToggle[eid] = newState
-        pendingSince[eid] = os.clock()
+        pendingSince[eid] = nowMs()
+        sliderDraft[eid] = nil
+        sliderDraftUntil[eid] = nil
+        if entityStates[eid] then
+            entityStates[eid].state = newState
+        end
+        sendEntityPatch(eid, { state = newState })
         callService(d, "toggle", eid, nil, function()
             clearPending(eid)
             render()
@@ -447,7 +488,7 @@ local function expandEntity(eid)
         expandedEntityId = nil
     else
         sliderDraft[eid] = nil
-        sliderDirty[eid] = nil
+        sliderDraftUntil[eid] = nil
         expandedEntityId = eid
     end
     render()
@@ -456,27 +497,42 @@ end
 function onNoop() end
 
 -- Light controls
+-- NOTE: Noctalia's C++ Slider updates its thumb natively on pointer press/drag
+-- and passes 0 arguments to onDragEnd. Calling render() inside onChange destroys
+-- the Slider widget mid-drag, so we only record sliderDraft in onChange and
+-- re-render on release (onDragEnd).
 local function onLightBrightnessSlide(eid, value)
     initDraft(eid)
     local val = math.floor((tonumber(value) or 255) + 0.5)
     sliderDraft[eid].brightness = val
-    render()
+    sliderDraftUntil[eid] = nowMs() + SLIDER_HOLD_MS
 end
 
 local function onLightBrightnessCommit(eid, value)
     initDraft(eid)
     local val = (sliderDraft[eid] and sliderDraft[eid].brightness) or math.floor((tonumber(value) or 0) + 0.5)
     sliderDraft[eid].brightness = val
+    sliderDraftUntil[eid] = nowMs() + SLIDER_HOLD_MS
     if val <= 0 then
         pendingToggle[eid] = "off"
-        pendingSince[eid] = os.clock()
+        pendingSince[eid] = nowMs()
+        if entityStates[eid] then
+            entityStates[eid].state = "off"
+            entityStates[eid].brightness = 0
+        end
+        sendEntityPatch(eid, { state = "off", brightness = 0 })
         haPost("/api/services/light/turn_off", { entity_id = eid }, function()
             clearPending(eid)
             render()
         end)
     else
         pendingToggle[eid] = "on"
-        pendingSince[eid] = os.clock()
+        pendingSince[eid] = nowMs()
+        if entityStates[eid] then
+            entityStates[eid].state = "on"
+            entityStates[eid].brightness = val
+        end
+        sendEntityPatch(eid, { state = "on", brightness = val })
         haPost("/api/services/light/turn_on", {
             entity_id = eid,
             brightness = val,
@@ -491,33 +547,45 @@ end
 local function onColorTempSlide(eid, value)
     initDraft(eid)
     sliderDraft[eid].color_temp = math.floor((tonumber(value) or 4000) + 0.5)
-    render()
+    sliderDraftUntil[eid] = nowMs() + SLIDER_HOLD_MS
 end
 
 local function onColorTempCommit(eid, value)
-    local val = math.floor((tonumber(value) or 4000) + 0.5)
     initDraft(eid)
+    local val = (sliderDraft[eid] and sliderDraft[eid].color_temp) or math.floor((tonumber(value) or 4000) + 0.5)
     sliderDraft[eid].color_temp = val
+    sliderDraftUntil[eid] = nowMs() + SLIDER_HOLD_MS
+    if entityStates[eid] then
+        entityStates[eid].color_temp = val
+    end
+    sendEntityPatch(eid, { color_temp = val })
     haPost("/api/services/light/turn_on", {
         entity_id = eid,
         color_temp_kelvin = val,
     })
+    render()
 end
 
 local function onHueSlide(eid, value)
     initDraft(eid)
     sliderDraft[eid].hue = math.floor((tonumber(value) or 0) + 0.5)
-    render()
+    sliderDraftUntil[eid] = nowMs() + SLIDER_HOLD_MS
 end
 
 local function onHueCommit(eid, value)
-    local val = math.floor((tonumber(value) or 0) + 0.5)
     initDraft(eid)
+    local val = (sliderDraft[eid] and sliderDraft[eid].hue) or math.floor((tonumber(value) or 0) + 0.5)
     sliderDraft[eid].hue = val
+    sliderDraftUntil[eid] = nowMs() + SLIDER_HOLD_MS
+    if entityStates[eid] then
+        entityStates[eid].hue = val
+    end
+    sendEntityPatch(eid, { hue = val })
     haPost("/api/services/light/turn_on", {
         entity_id = eid,
         hs_color = { val, 100 },
     })
+    render()
 end
 
 -- Media controls
@@ -544,14 +612,20 @@ end
 local function onMediaVolumeSlide(eid, value)
     initDraft(eid)
     sliderDraft[eid].volume = math.floor((tonumber(value) or 50) + 0.5)
-    render()
+    sliderDraftUntil[eid] = nowMs() + SLIDER_HOLD_MS
 end
 
 local function onMediaVolumeCommit(eid, value)
-    local pct = math.floor((tonumber(value) or 50) + 0.5)
     initDraft(eid)
+    local pct = (sliderDraft[eid] and sliderDraft[eid].volume) or math.floor((tonumber(value) or 50) + 0.5)
     sliderDraft[eid].volume = pct
+    sliderDraftUntil[eid] = nowMs() + SLIDER_HOLD_MS
+    if entityStates[eid] then
+        entityStates[eid].volume_level = pct / 100.0
+    end
+    sendEntityPatch(eid, { volume_level = pct / 100.0 })
     callService("media_player", "volume_set", eid, { volume_level = pct / 100.0 })
+    render()
 end
 
 -- Speaker grouping
@@ -950,6 +1024,7 @@ local function buildLightExpandedSection(entity)
         table.insert(rows, ui.row({ align = "center", gap = 8 }, {
             ui.glyph({ name = "temperature", size = 16, color = "on_surface_variant" }),
             ui.slider({
+                key = "slider-ct-" .. eid,
                 min = 2000, max = 6500, step = 50, value = ctk,
                 onChange = function(v) onColorTempSlide(eid, v) end,
                 onDragEnd = function(v) onColorTempCommit(eid, v) end,
@@ -964,6 +1039,7 @@ local function buildLightExpandedSection(entity)
         table.insert(rows, ui.row({ align = "center", gap = 8 }, {
             ui.glyph({ name = "palette", size = 16, color = "on_surface_variant" }),
             ui.slider({
+                key = "slider-hue-" .. eid,
                 min = 0, max = 360, step = 1, value = hv,
                 onChange = function(v) onHueSlide(eid, v) end,
                 onDragEnd = function(v) onHueCommit(eid, v) end,
@@ -1039,6 +1115,7 @@ local function buildEntityCard(entity)
                 tooltip = entity.friendly_name or entity.entity_id,
             }),
             ui.slider({
+                key = "slider-bri-" .. entity.entity_id,
                 min = 0, max = 255, step = 1, value = bv,
                 onChange = function(v) onLightBrightnessSlide(entity.entity_id, v) end,
                 onDragEnd = function(v) onLightBrightnessCommit(entity.entity_id, v) end,
@@ -1062,6 +1139,7 @@ local function buildEntityCard(entity)
             ui.button({ glyph = "player-skip-forward", onClick = function() onMediaNext(entity.entity_id) end }),
             ui.button({ glyph = isMuted and "volume-off" or "volume", onClick = function() onMediaMute(entity.entity_id) end }),
             ui.slider({
+                key = "slider-vol-" .. entity.entity_id,
                 min = 0, max = 100, step = 1, value = curVol,
                 onChange = function(v) onMediaVolumeSlide(entity.entity_id, v) end,
                 onDragEnd = function(v) onMediaVolumeCommit(entity.entity_id, v) end,
@@ -1623,7 +1701,8 @@ local function buildBrowserView()
 end
 
 function render()
-    reconcilePending(os.clock())
+    if not isPanelOpen then return end
+    reconcilePending(nowMs())
 
     if activeTab == "browser" then
         panel.render(ui.column({ flexGrow = 1, gap = 12, align = "stretch" }, {
@@ -1656,37 +1735,46 @@ function render()
 end
 
 function onOpen(_context)
+    isPanelOpen = true
     status = noctalia.state.get("connection_status") or "unconfigured"
     entityStates = noctalia.state.get("entities") or {}
     sliderDraft = {}
+    sliderDraftUntil = {}
     loadMonitoredEntities()
     ensureMaConfigEntry()
     panelOpenCount = panelOpenCount + 1
     panel.setWantsSecondTicks(true)
-    noctalia.state.set("command", "refresh")
-    noctalia.state.set("panel_open_signal", panelOpenCount)
+    noctalia.state.set("panel_open_signal", nowMs())
     render()
 end
 
 function onClose()
+    isPanelOpen = false
     panel.setWantsSecondTicks(false)
 end
 
 function update()
-    local now = os.clock()
+    local now = nowMs()
 
     if pendingParseBody ~= nil then
         stepParse()
         return
     end
 
-    if browserLoading and browserLoadingSince and (now - browserLoadingSince) > BROWSER_TIMEOUT_SECONDS then
+    if browserLoading and browserLoadingSince and (now - browserLoadingSince) > BROWSER_TIMEOUT_MS then
         browserLoading = false
         browserLoadingSince = nil
         browserFailed = true
         reconcilePending(now)
         render()
         return
+    end
+
+    for eid, untilMs in pairs(sliderDraftUntil) do
+        if now >= untilMs then
+            sliderDraftUntil[eid] = nil
+            sliderDraft[eid] = nil
+        end
     end
 
     if reconcilePending(now) then
@@ -1699,12 +1787,14 @@ end
 
 noctalia.state.watch("entities", function(value)
     entityStates = value or {}
+    local now = nowMs()
     for eid in pairs(sliderDraft) do
-        if not sliderDirty[eid] then
+        if not sliderDraftUntil[eid] or now >= sliderDraftUntil[eid] then
             sliderDraft[eid] = nil
+            sliderDraftUntil[eid] = nil
         end
     end
-    reconcilePending(os.clock())
+    reconcilePending(now)
     render()
 end)
 

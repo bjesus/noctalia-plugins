@@ -1,16 +1,26 @@
 --!nonstrict
 
-local formatPattern = noctalia.getConfig("music_format")
-if not formatPattern or formatPattern == "" then
-    formatPattern = "{title} - {artist}"
-end
-
-local targetSpeakerEid = noctalia.getConfig("music_target_speaker")
-
 local entityStates = {}
 local status = "unconfigured"
+local lastChosenSpeaker = nil
 
 local render
+
+local function getFormatPattern()
+    local fmt = noctalia.getConfig("music_format")
+    if type(fmt) == "string" and fmt ~= "" then
+        return fmt
+    end
+    return "{title} - {artist}"
+end
+
+local function getTargetSpeakerEid()
+    local spk = noctalia.getConfig("music_target_speaker")
+    if type(spk) == "string" and spk ~= "" then
+        return spk
+    end
+    return ""
+end
 
 local function formatTrack(formatStr, title, artist, album)
     local res = formatStr
@@ -23,24 +33,75 @@ local function formatTrack(formatStr, title, artist, album)
     return res
 end
 
+local function hasTitle(e)
+    return type(e) == "table" and type(e.media_title) == "string" and e.media_title ~= ""
+end
+
+local function isMaPlayer(e)
+    return type(e) == "table" and type(e.mass_player_type) == "string" and e.mass_player_type ~= ""
+end
+
+local function resolveGroupMetadata(player)
+    if not player or hasTitle(player) then
+        return player
+    end
+    local members = player.group_members
+    if type(members) == "table" then
+        for _, mEid in ipairs(members) do
+            local mEnt = entityStates[mEid]
+            if mEnt and mEnt.state == "playing" and hasTitle(mEnt) then
+                return mEnt
+            end
+        end
+        for _, mEid in ipairs(members) do
+            local mEnt = entityStates[mEid]
+            if mEnt and hasTitle(mEnt) then
+                return mEnt
+            end
+        end
+    end
+    return player
+end
+
+local function playerRank(e)
+    local score = 0
+    if isMaPlayer(e) then score = score + 4 end
+    if hasTitle(e) then score = score + 2 end
+    if lastChosenSpeaker and e.entity_id == lastChosenSpeaker then score = score + 1 end
+    return score
+end
+
 local function getActivePlayer()
-    -- If user set a specific target speaker in widget setting
-    if targetSpeakerEid and targetSpeakerEid ~= "" and entityStates[targetSpeakerEid] then
+    local targetSpeakerEid = getTargetSpeakerEid()
+
+    -- 1. If user set a specific target speaker in widget setting and it is playing
+    if targetSpeakerEid ~= "" and entityStates[targetSpeakerEid] then
         local e = entityStates[targetSpeakerEid]
         if e.domain == "media_player" and e.state == "playing" then
             return e
         end
     end
 
-    -- Otherwise find any media player currently playing
+    -- 2. Find all currently playing media players and pick the best one deterministically
+    local playing = {}
     for _, e in pairs(entityStates) do
-        if e.domain == "media_player" and e.state == "playing" then
-            return e
+        if type(e) == "table" and e.domain == "media_player" and e.state == "playing" then
+            table.insert(playing, e)
         end
     end
 
-    -- If none playing, return specified speaker if paused
-    if targetSpeakerEid and targetSpeakerEid ~= "" and entityStates[targetSpeakerEid] then
+    if #playing > 0 then
+        table.sort(playing, function(a, b)
+            local rA = playerRank(a)
+            local rB = playerRank(b)
+            if rA ~= rB then return rA > rB end
+            return (a.entity_id or "") < (b.entity_id or "")
+        end)
+        return playing[1]
+    end
+
+    -- 3. If none playing, return specified target speaker if available
+    if targetSpeakerEid ~= "" and entityStates[targetSpeakerEid] then
         return entityStates[targetSpeakerEid]
     end
 
@@ -55,11 +116,12 @@ render = function()
     barWidget.setGlyphColor(isPlaying and "primary" or "on_surface_variant")
 
     if player and isPlaying then
-        local title = player.media_title or ""
-        local artist = player.media_artist or ""
-        local album = player.media_album_name or ""
+        local metaSource = resolveGroupMetadata(player) or player
+        local title = metaSource.media_title or ""
+        local artist = metaSource.media_artist or ""
+        local album = metaSource.media_album_name or ""
 
-        local label = formatTrack(formatPattern, title, artist, album)
+        local label = formatTrack(getFormatPattern(), title, artist, album)
         if label == "" then
             label = player.friendly_name or "Music"
         end
@@ -82,6 +144,11 @@ noctalia.state.watch("entities", function(value)
     if render then render() end
 end)
 
+noctalia.state.watch("last_chosen_speaker", function(value)
+    lastChosenSpeaker = value
+    if render then render() end
+end)
+
 noctalia.state.watch("connection_status", function(value)
     status = value or "unconfigured"
     if render then render() end
@@ -90,6 +157,7 @@ end)
 function update()
     noctalia.setUpdateInterval(3000)
     entityStates = noctalia.state.get("entities") or {}
+    lastChosenSpeaker = noctalia.state.get("last_chosen_speaker")
     status = noctalia.state.get("connection_status") or "unconfigured"
     render()
 end
@@ -99,11 +167,5 @@ function onClick()
 end
 
 function onRightClick()
-    local player = getActivePlayer()
-    if player and player.entity_id then
-        noctalia.runAsync(string.format(
-            "noctalia msg service-call bjesus/ha-ma:connection media_player/media_play_pause %s",
-            player.entity_id
-        ))
-    end
+    noctalia.runAsync("noctalia msg plugin bjesus/ha-ma:connection all toggle_pause")
 end

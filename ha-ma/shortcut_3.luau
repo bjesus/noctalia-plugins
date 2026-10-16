@@ -2,7 +2,6 @@
 
 local haUrl = noctalia.getConfig("ha_url")
 local haToken = noctalia.getConfig("ha_token")
-local configuredEntityId = noctalia.getConfig("shortcut_entity_3") or ""
 local SLOT_LABEL = noctalia.tr("shortcut.label_3")
 
 local entityStates = {}
@@ -10,18 +9,50 @@ local pendingToggle = {}
 local pendingSince = {}
 local pendingTimerToken = {}
 local pendingTimerSeq = 0
+local patchSeq = 0
 
 local PENDING_TIMEOUT_SECONDS = 8
+local PENDING_TIMEOUT_MS = 8000
 local render
 
+local function nowMs()
+    if type(noctalia.nowMs) == "function" then
+        local ms = noctalia.nowMs()
+        if type(ms) == "number" and ms > 0 then
+            return ms
+        end
+    end
+    return os.time() * 1000
+end
+
+local function sendEntityPatch(eid, fields, states)
+    patchSeq = patchSeq + 1
+    noctalia.state.set("entity_patch", {
+        seq = nowMs() * 1000 + patchSeq,
+        eid = eid,
+        fields = fields,
+        states = states,
+    })
+end
+
+local function getConfiguredEntityId()
+    local eid = noctalia.getConfig("shortcut_entity_3")
+    if type(eid) ~= "string" then return "" end
+    return (eid:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
 local function getCleanUrl()
-    if type(haUrl) ~= "string" then return "" end
-    return (haUrl:gsub("/$", ""))
+    local u = noctalia.getConfig("ha_url")
+    if type(u) ~= "string" or u == "" then u = haUrl end
+    if type(u) ~= "string" then return "" end
+    return (u:gsub("/+$", ""))
 end
 
 local function getCleanToken()
-    if type(haToken) ~= "string" then return "" end
-    return haToken:gsub("^%s+", ""):gsub("%s+$", "")
+    local t = noctalia.getConfig("ha_token")
+    if type(t) ~= "string" or t == "" then t = haToken end
+    if type(t) ~= "string" then return "" end
+    return t:gsub("^%s+", ""):gsub("%s+$", "")
 end
 
 local function stateGlyph(domain, isOn)
@@ -35,6 +66,7 @@ local function stateGlyph(domain, isOn)
 end
 
 local function getEntity()
+    local configuredEntityId = getConfiguredEntityId()
     if configuredEntityId == "" then return nil end
     return entityStates[configuredEntityId]
 end
@@ -48,7 +80,7 @@ end
 local function isPendingTimedOut(entityId, now)
     local startedAt = pendingSince[entityId]
     if not startedAt then return false end
-    return (now or os.clock()) - startedAt >= PENDING_TIMEOUT_SECONDS
+    return (now or nowMs()) - startedAt >= PENDING_TIMEOUT_MS
 end
 
 local function reconcilePending(now)
@@ -63,7 +95,7 @@ end
 local function schedulePendingTimeout(entityId)
     pendingTimerSeq = pendingTimerSeq + 1
     local token = pendingTimerSeq
-    pendingSince[entityId] = os.clock()
+    pendingSince[entityId] = nowMs()
     pendingTimerToken[entityId] = token
 
     noctalia.runAsync("sleep " .. tostring(PENDING_TIMEOUT_SECONDS), function(_result)
@@ -76,8 +108,9 @@ local function schedulePendingTimeout(entityId)
 end
 
 render = function()
-    reconcilePending(os.clock())
+    reconcilePending(nowMs())
 
+    local configuredEntityId = getConfiguredEntityId()
     local entity = getEntity()
 
     if not entity then
@@ -108,7 +141,7 @@ end
 
 noctalia.state.watch("entities", function(value)
     entityStates = value or {}
-    reconcilePending(os.clock())
+    reconcilePending(nowMs())
     render()
 end)
 
@@ -117,7 +150,7 @@ noctalia.state.watch("connection_status", function(_value)
 end)
 
 function onClick()
-    reconcilePending(os.clock())
+    reconcilePending(nowMs())
 
     local entity = getEntity()
     local cleanToken = getCleanToken()
@@ -140,9 +173,26 @@ function onClick()
             "Content-Type: application/json",
         },
         body = encoded,
+        allow_insecure_tls = true,
     }, function(response)
         local httpStatus = response and response.status or 0
-        if httpStatus >= 200 and httpStatus < 300 then return end
+        if httpStatus >= 200 and httpStatus < 300 then
+            clearPending(eid)
+            if entityStates[eid] then
+                entityStates[eid].state = newState
+            end
+            if response and response.body and #response.body > 2 then
+                local ok, decoded = pcall(function() return noctalia.json.decode(response.body) end)
+                if ok and type(decoded) == "table" and #decoded > 0 then
+                    sendEntityPatch(eid, { state = newState }, decoded)
+                    render()
+                    return
+                end
+            end
+            sendEntityPatch(eid, { state = newState })
+            render()
+            return
+        end
         noctalia.log("Home Assistant rejected toggle for " .. eid .. ": status " .. tostring(httpStatus))
         clearPending(eid)
         render()

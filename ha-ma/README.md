@@ -33,6 +33,32 @@ Monitor and control your Home Assistant entities and Music Assistant playback fr
    noctalia msg panel-toggle bjesus/ha-ma:music
    ```
 
+### Media Actions via IPC
+
+Control playback and volume on the active destination speaker (using the same resolution rules: targeting the currently playing speaker if one is active, or falling back to the latest chosen speaker):
+
+```sh
+# Toggle play/pause
+noctalia msg plugin bjesus/ha-ma:connection all toggle_pause
+
+# Adjust volume (optional step, defaults to 5%)
+noctalia msg plugin bjesus/ha-ma:connection all volume_up
+noctalia msg plugin bjesus/ha-ma:connection all volume_down
+noctalia msg plugin bjesus/ha-ma:connection all volume_up 0.10
+
+# Toggle mute
+noctalia msg plugin bjesus/ha-ma:connection all volume_mute
+
+# Track controls
+noctalia msg plugin bjesus/ha-ma:connection all next
+noctalia msg plugin bjesus/ha-ma:connection all previous
+
+# Select target speaker
+noctalia msg plugin bjesus/ha-ma:connection all select_speaker "Tandberg"
+```
+
+You can bind these commands to keyboard shortcuts (e.g. `XF86AudioPlay`, `XF86AudioRaiseVolume`, `XF86AudioLowerVolume`) in your compositor configuration (Sway, Hyprland, Niri, etc.).
+
 ## Settings
 
 | Setting | Type | Default | Description |
