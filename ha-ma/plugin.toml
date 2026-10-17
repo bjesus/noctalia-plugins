@@ -73,6 +73,16 @@ entry = "widget_music.luau"
   default = "{title} - {artist}"
 
   [[widget.setting]]
+  key = "music_max_length"
+  type = "int"
+  label_key = "settings.music_max_length.label"
+  description_key = "settings.music_max_length.description"
+  default = 0
+  min = 0
+  max = 1000
+  step = 1
+
+  [[widget.setting]]
   key = "music_target_speaker"
   type = "string"
   label_key = "settings.music_target_speaker.label"

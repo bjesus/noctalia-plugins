@@ -70,7 +70,11 @@
     },
     "music_format": {
       "label": "Now Playing format",
-      "description": "Format for bar text (e.g. '{title} - {artist}', '{artist} - {album}'). Tokens: {title}, {artist}, {album}."
+      "description": "Format for bar text (e.g. '{title:20} - {artist}'). Tokens: {title}, {artist}, {album}, {speaker}. Optional length limit: {token:max}."
+    },
+    "music_max_length": {
+      "label": "Maximum label length",
+      "description": "Maximum number of characters for the total label (0 for unlimited)."
     },
     "music_target_speaker": {
       "label": "Target Media Player",

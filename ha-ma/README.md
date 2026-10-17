@@ -67,7 +67,8 @@ You can bind these commands to keyboard shortcuts (e.g. `XF86AudioPlay`, `XF86Au
 | `ha_token` | `string` | `""` | Long-lived access token |
 | `shortcut_entity_1`–`4` | `string` | `""` | Entity IDs assigned to quick-toggle tiles |
 | `show_entity_count` | `bool` | `false` | Show count of monitored entities in the status bar widget |
-| `music_format` | `string` | `"{title} - {artist}"` | Now playing format string for the bar widget |
+| `music_format` | `string` | `"{title} - {artist}"` | Now playing format string for the bar widget. Supports tokens `{title}`, `{artist}`, `{album}`, `{speaker}` and per-field max length limits, e.g. `{title:20} - {artist}` |
+| `music_max_length` | `int` | `0` | Maximum character length for the total widget label (`0` for unlimited) |
 | `music_target_speaker` | `string` | `""` | Entity ID of media player to monitor (or blank to auto-detect) |
 
 ## Credits & License

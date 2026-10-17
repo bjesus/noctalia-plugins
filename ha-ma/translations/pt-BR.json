@@ -68,6 +68,18 @@
     "show_entity_count": {
       "label": "Mostrar o Número de Entidades"
     },
+    "music_format": {
+      "label": "Formato de reprodução",
+      "description": "Formato para o texto da barra (ex.: '{title:20} - {artist}'). Tokens: {title}, {artist}, {album}, {speaker}. Limite opcional: {token:máx}."
+    },
+    "music_max_length": {
+      "label": "Tamanho máximo do texto",
+      "description": "Número máximo de caracteres para o rótulo total (0 para ilimitado)."
+    },
+    "music_target_speaker": {
+      "label": "Reprodutor de Mídia Alvo",
+      "description": "ID da entidade do reprodutor para monitorar (ou em branco para detectar automaticamente)."
+    },
     "token": {
       "description": "Crie um token no Home Assistant em Profile → Security → Long-lived access tokens",
       "label": "Token de Acesso Longo"
