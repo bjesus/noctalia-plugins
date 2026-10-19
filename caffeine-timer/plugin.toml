@@ -1,0 +1,56 @@
+# Caffeine Timer - a single bar widget that keeps the computer awake for a
+# limited time. Clicking cycles through durations (resetting the countdown each
+# time): 5 min -> 10 min -> 30 min -> 1 h -> 2 h -> 5 h -> 12 h -> forever ->
+# off. Sessions use the shell's own caffeine idle inhibitor (`noctalia msg
+# caffeine-enable` / `caffeine-disable`), so the built-in Caffeine widget
+# reflects the same state.
+
+id = "bjesus/caffeine-timer"
+name = "Caffeine Timer"
+version = "1.0.0"
+plugin_api = 14
+author = "bjesus"
+license = "MIT"
+tags = ["bar", "system", "indicator"]
+icon = "coffee"
+description = "Keep the computer awake on a timer: click to cycle 5 minutes up to forever, click past forever to cancel."
+
+# Right-clicking the widget cancels the running timer and lets the computer sleep again
+[[setting]]
+key = "right_click_cancels"
+type = "bool"
+label_key = "settings.right_click_cancels.label"
+description_key = "settings.right_click_cancels.description"
+default = true
+
+# Middle-clicking the widget cancels the running timer and lets the computer sleep again
+[[setting]]
+key = "middle_click_cancels"
+type = "bool"
+label_key = "settings.middle_click_cancels.label"
+description_key = "settings.middle_click_cancels.description"
+default = true
+
+# Notification when the countdown finishes and caffeine is disabled again
+[[setting]]
+key = "notify_on_finish"
+type = "bool"
+label_key = "settings.notify_on_finish.label"
+description_key = "settings.notify_on_finish.description"
+default = true
+
+# Countdown text next to the coffee glyph while a session is running
+[[setting]]
+key = "show_remaining"
+type = "bool"
+label_key = "settings.show_remaining.label"
+description_key = "settings.show_remaining.description"
+default = true
+
+[[widget]]
+id = "caffeine"
+entry = "widget.luau"
+
+  # Free the middle button for the script (by default it opens widget settings)
+  [widget.actions]
+  middle = "none"

@@ -6,6 +6,7 @@ Custom plugins repository for [Noctalia](https://noctalia.dev).
 
 - **Home Assistant & Music Assistant** (`bjesus/ha-ma`): Monitor and control entities, brightness, scenes, and media players from the bar, panels, and control center. Supports Music Assistant search, playback, and speaker grouping. Based on `pozzoo/hassio` with significant extensions.
 - **Tailscale Exit Nodes** (`bjesus/tailscale-exit-nodes`): Bar status indicator, quick connect toggle, and exit node switcher panel.
+- **Caffeine Timer** (`bjesus/caffeine-timer`): Keep the computer awake on a timer. Click the bar widget to cycle 5 min → 10 min → 30 min → 1 h → 2 h → 5 h → 12 h → forever → cancel; the computer won't sleep until the countdown ends.
 - **Waybar Custom Commands** (`bjesus/waybar-custom`): Run custom scripts and commands in the Noctalia bar with full Waybar custom module compatibility ([waybar-custom(5)](https://man.archlinux.org/man/waybar-custom.5.en)). Supports polling, continuous streaming, JSON/text formats, tooltips, format icons, HTML entity decoding, and click/scroll actions.
 
 ## Adding this source to Noctalia
@@ -21,6 +22,7 @@ Then enable whichever plugin you want:
 ```sh
 noctalia msg plugins enable bjesus/tailscale-exit-nodes
 noctalia msg plugins enable bjesus/ha-ma
+noctalia msg plugins enable bjesus/caffeine-timer
 noctalia msg plugins enable bjesus/waybar-custom
 ```
 

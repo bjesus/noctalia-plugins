@@ -24,6 +24,18 @@ plugin_api = 9
 tags = ["bar", "panel", "service", "network"]
 
 [[plugin]]
+id = "bjesus/caffeine-timer"
+name = "Caffeine Timer"
+version = "1.0.0"
+author = "bjesus"
+license = "MIT"
+icon = "coffee"
+description = "Keep the computer awake on a timer: click to cycle 5 minutes up to forever, click past forever to cancel."
+deprecated = false
+plugin_api = 14
+tags = ["bar", "system", "indicator"]
+
+[[plugin]]
 id = "bjesus/waybar-custom"
 name = "Waybar Custom Commands"
 version = "1.0.0"

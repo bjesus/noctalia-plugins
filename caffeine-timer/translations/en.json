@@ -1,0 +1,50 @@
+{
+  "settings": {
+    "right_click_cancels": {
+      "label": "Right-click cancels",
+      "description": "Right-clicking the widget immediately cancels the timer and lets the computer sleep again."
+    },
+    "middle_click_cancels": {
+      "label": "Middle-click cancels",
+      "description": "Middle-clicking the widget immediately cancels the timer and lets the computer sleep again."
+    },
+    "notify_on_finish": {
+      "label": "Notify when the timer ends",
+      "description": "Show a notification when the countdown finishes and caffeine is disabled again."
+    },
+    "show_remaining": {
+      "label": "Show remaining time",
+      "description": "Display the time left next to the coffee glyph while a timer is running."
+    }
+  },
+  "durations": {
+    "five_minutes": "5 minutes",
+    "ten_minutes": "10 minutes",
+    "thirty_minutes": "30 minutes",
+    "one_hour": "1 hour",
+    "two_hours": "2 hours",
+    "five_hours": "5 hours",
+    "twelve_hours": "12 hours",
+    "forever": "Forever"
+  },
+  "widget": {
+    "caffeine": "Caffeine",
+    "off": "Off",
+    "click": "Click",
+    "cancel": "Cancel",
+    "remaining": "Remaining",
+    "ends_at": "Ends at",
+    "forever_symbol": "∞",
+    "click_start": "Start {duration}",
+    "click_next": "Reset to {duration}",
+    "cancel_right": "Right-click",
+    "cancel_middle": "Middle-click",
+    "cancel_both": "Right/middle-click"
+  },
+  "notify": {
+    "done_title": "Caffeine timer finished",
+    "done_body": "The {duration} caffeine session ended — the computer can sleep again.",
+    "unavailable_title": "Caffeine is unavailable",
+    "unavailable_body": "Idle inhibition is not supported here, so the timer was cancelled."
+  }
+}
